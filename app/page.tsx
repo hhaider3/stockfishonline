@@ -4,7 +4,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Chess, type Color, type PieceSymbol, type Square } from "chess.js";
 
 type EngineMode = "move" | "analysis";
-type EngineRequest = { mode: EngineMode; fen: string } | null;
+type EngineRequest = { mode: EngineMode; fen: string; cancelled: boolean };
+type StoredMove = { from: Square; to: Square; promotion?: PieceSymbol };
+type StoredGame = {
+  playerColor?: Color;
+  level?: number;
+  analysisOn?: boolean;
+  fen?: string;
+  baseFen?: string;
+  moves?: StoredMove[];
+  flipped?: boolean;
+};
 type PendingPromotion = { from: Square; to: Square } | null;
 
 const FILES = ["a", "b", "c", "d", "e", "f", "g", "h"] as const;
@@ -32,6 +42,23 @@ const LEVELS: Level[] = [
 ];
 
 const PROMOTION_PIECES: PieceSymbol[] = ["q", "r", "b", "n"];
+const INITIAL_FEN = new Chess().fen();
+
+function rebuildGame(baseFen: string, moves: StoredMove[], target = moves.length) {
+  const game = new Chess(baseFen);
+  for (let i = 0; i < Math.min(target, moves.length); i++) {
+    game.move(moves[i]);
+  }
+  return game;
+}
+
+function storedMoves(game: Chess): StoredMove[] {
+  return game.history({ verbose: true }).map(({ from, to, promotion }) => ({
+    from,
+    to,
+    ...(promotion ? { promotion } : {}),
+  }));
+}
 
 function prettyMove(move: string) {
   if (!move || move === "—") return "—";
@@ -46,21 +73,26 @@ function isPromotionMove(game: Chess, from: Square, to: Square) {
 }
 
 export default function Home() {
-  const gameRef = useRef(new Chess());
+  const gameRef = useRef(new Chess(INITIAL_FEN));
+  const baseFenRef = useRef(INITIAL_FEN);
   const workerRef = useRef<Worker | null>(null);
-  const requestRef = useRef<EngineRequest>(null);
+  const requestRef = useRef<EngineRequest | null>(null);
+  const pendingRequestRef = useRef<Omit<EngineRequest, "cancelled"> | null>(null);
   const queuedEngineMoveRef = useRef(false);
   const analysisOnRef = useRef(true);
+  const playerColorRef = useRef<Color>("w");
+  const levelRef = useRef(2);
   const startSearchRef = useRef<(mode: EngineMode, searchFen: string) => void>(() => {});
   const boardRef = useRef<HTMLDivElement | null>(null);
-  const [fen, setFen] = useState(gameRef.current.fen());
+  const [fen, setFen] = useState(INITIAL_FEN);
   const [selected, setSelected] = useState<Square | null>(null);
+  const [activeSquare, setActiveSquare] = useState<Square>("e2");
   const [lastMove, setLastMove] = useState<{ from: Square; to: Square } | null>(null);
   const [flipped, setFlipped] = useState(false);
   const [playerColor, setPlayerColor] = useState<Color>("w");
   const [level, setLevel] = useState(2);
   const [engineState, setEngineState] = useState("Loading engine…");
-  const [thinking, setThinking] = useState(false);
+  const [searchMode, setSearchMode] = useState<EngineMode | null>(null);
   const [analysisOn, setAnalysisOn] = useState(true);
   const [evaluation, setEvaluation] = useState(0);
   const [mate, setMate] = useState<number | null>(null);
@@ -69,7 +101,7 @@ export default function Home() {
   const [depth, setDepth] = useState<number | null>(null);
   const [pendingPromotion, setPendingPromotion] = useState<PendingPromotion>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [fenInput, setFenInput] = useState(gameRef.current.fen());
+  const [fenInput, setFenInput] = useState(INITIAL_FEN);
   const [showFenBox, setShowFenBox] = useState(false);
   const [viewPly, setViewPly] = useState<number | null>(null);
   const [dragFrom, setDragFrom] = useState<Square | null>(null);
@@ -100,6 +132,16 @@ export default function Home() {
     }
   }, []);
 
+  const stopSearch = useCallback(() => {
+    pendingRequestRef.current = null;
+    queuedEngineMoveRef.current = false;
+    if (requestRef.current) {
+      requestRef.current.cancelled = true;
+      workerRef.current?.postMessage("stop");
+    }
+    setSearchMode(null);
+  }, []);
+
   const startSearch = useCallback(
     (mode: EngineMode, searchFen: string) => {
       const worker = workerRef.current;
@@ -107,9 +149,18 @@ export default function Home() {
         if (mode === "move") queuedEngineMoveRef.current = true;
         return;
       }
-      worker.postMessage("stop");
-      requestRef.current = { mode, fen: searchFen };
-      setThinking(true);
+
+      if (requestRef.current) {
+        requestRef.current.cancelled = true;
+        pendingRequestRef.current = { mode, fen: searchFen };
+        setSearchMode(mode);
+        worker.postMessage("stop");
+        return;
+      }
+
+      pendingRequestRef.current = null;
+      requestRef.current = { mode, fen: searchFen, cancelled: false };
+      setSearchMode(mode);
       if (mode === "move") setDepth(null);
       setBestMove("—");
       if (mode === "analysis") setPv([]);
@@ -127,26 +178,41 @@ export default function Home() {
 
   useEffect(() => {
     analysisOnRef.current = analysisOn;
+    playerColorRef.current = playerColor;
+    levelRef.current = level;
     startSearchRef.current = startSearch;
-  }, [analysisOn, startSearch]);
+  }, [analysisOn, level, playerColor, startSearch]);
 
   // persistence
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem("stockfish-board-v2");
       if (!raw) return;
-      const d = JSON.parse(raw) as { playerColor?: Color; level?: number; analysisOn?: boolean; fen?: string; flipped?: boolean };
+      const d = JSON.parse(raw) as StoredGame;
       if (d.playerColor === "w" || d.playerColor === "b") setPlayerColor(d.playerColor);
       if (typeof d.level === "number" && d.level >= 0 && d.level < LEVELS.length) setLevel(d.level);
       if (typeof d.analysisOn === "boolean") setAnalysisOn(d.analysisOn);
       if (typeof d.flipped === "boolean") setFlipped(d.flipped);
-      if (typeof d.fen === "string" && d.fen.split(" ").length >= 4) {
+
+      let restored: Chess | null = null;
+      let restoredBase = INITIAL_FEN;
+      if (typeof d.baseFen === "string" && Array.isArray(d.moves)) {
         try {
-          const c = new Chess(d.fen);
-          gameRef.current = c;
-          setFen(c.fen());
-          setFenInput(c.fen());
+          restored = rebuildGame(d.baseFen, d.moves);
+          restoredBase = d.baseFen;
         } catch {}
+      }
+      if (!restored && typeof d.fen === "string") {
+        try {
+          restored = new Chess(d.fen);
+          restoredBase = restored.fen();
+        } catch {}
+      }
+      if (restored) {
+        baseFenRef.current = restoredBase;
+        gameRef.current = restored;
+        setFen(restored.fen());
+        setFenInput(restored.fen());
       }
     } catch {}
   }, []);
@@ -155,7 +221,15 @@ export default function Home() {
     try {
       window.localStorage.setItem(
         "stockfish-board-v2",
-        JSON.stringify({ playerColor, level, analysisOn, flipped, fen }),
+        JSON.stringify({
+          playerColor,
+          level,
+          analysisOn,
+          flipped,
+          fen,
+          baseFen: baseFenRef.current,
+          moves: storedMoves(gameRef.current),
+        }),
       );
     } catch {}
   }, [playerColor, level, analysisOn, flipped, fen]);
@@ -175,7 +249,7 @@ export default function Home() {
       const line = String(event.data);
       if (line === "uciok") {
         // set default options once
-        applyUciOptions(worker!, level);
+        applyUciOptions(worker!, levelRef.current);
         worker!.postMessage("isready");
         return;
       }
@@ -187,7 +261,7 @@ export default function Home() {
       const request = requestRef.current;
       if (!request) return;
 
-      if (line.startsWith("info ") && line.includes(" score ")) {
+      if (!request.cancelled && line.startsWith("info ") && line.includes(" score ")) {
         const cp = line.match(/ score cp (-?\d+)/);
         const mateScore = line.match(/ score mate (-?\d+)/);
         const pvMatch = line.match(/\spv\s(.+)$/);
@@ -206,11 +280,15 @@ export default function Home() {
 
       if (!line.startsWith("bestmove ")) return;
       const uci = line.split(" ")[1];
-      setThinking(false);
-      setBestMove(uci === "(none)" ? "—" : uci);
       requestRef.current = null;
+      let followUp = pendingRequestRef.current;
+      pendingRequestRef.current = null;
 
-      if (request.mode === "move" && uci && uci !== "(none)" && gameRef.current.fen() === request.fen) {
+      if (!request.cancelled) {
+        setBestMove(uci === "(none)" ? "—" : uci);
+      }
+
+      if (!request.cancelled && request.mode === "move" && uci && uci !== "(none)" && gameRef.current.fen() === request.fen) {
         try {
           const move = gameRef.current.move({
             from: uci.slice(0, 2) as Square,
@@ -221,18 +299,25 @@ export default function Home() {
           setCopyLabel(null);
           syncGame();
           if (analysisOnRef.current && !gameRef.current.isGameOver()) {
-            window.setTimeout(() => startSearchRef.current("analysis", gameRef.current.fen()), 80);
+            followUp = { mode: "analysis", fen: gameRef.current.fen() };
           }
         } catch {
           setEngineState("Engine move error");
         }
+      }
+
+      if (followUp) {
+        setSearchMode(followUp.mode);
+        window.setTimeout(() => startSearchRef.current(followUp.mode, followUp.fen), 0);
+      } else {
+        setSearchMode(null);
       }
     };
 
     const onError = () => {
       if (stopped) return;
       setEngineState("Engine failed to load");
-      setThinking(false);
+      setSearchMode(null);
     };
 
     worker.onmessage = onMessage;
@@ -242,36 +327,37 @@ export default function Home() {
       stopped = true;
       worker?.terminate();
       workerRef.current = null;
+      requestRef.current = null;
+      pendingRequestRef.current = null;
     };
-  }, [syncGame, applyUciOptions, level]);
+  }, [syncGame, applyUciOptions]);
 
   useEffect(() => {
     if (engineState !== "Ready") return;
+    if (requestRef.current || pendingRequestRef.current) return;
     if (queuedEngineMoveRef.current) {
       queuedEngineMoveRef.current = false;
       startSearch("move", gameRef.current.fen());
-    } else if (analysisOn && gameRef.current.history().length === 0) {
+    } else if (!gameRef.current.isGameOver() && gameRef.current.turn() !== playerColorRef.current) {
+      startSearch("move", gameRef.current.fen());
+    } else if (analysisOnRef.current && !gameRef.current.isGameOver()) {
       startSearch("analysis", gameRef.current.fen());
     }
-  }, [analysisOn, engineState, startSearch]);
+  }, [engineState, startSearch]);
 
   // re-apply UCI options when level changes while idle
   useEffect(() => {
-    if (engineState !== "Ready" || thinking) return;
+    if (engineState !== "Ready" || searchMode !== null) return;
     const w = workerRef.current;
     if (w) applyUciOptions(w, level);
-  }, [level, engineState, thinking, applyUciOptions]);
+  }, [level, engineState, searchMode, applyUciOptions]);
 
   const displayFen = useMemo(() => {
     if (viewPly === null) return fen;
     try {
-      const c = new Chess();
-      const hist = gameRef.current.history({ verbose: true });
-      // rebuild to ply
-      const target = Math.max(0, Math.min(viewPly, hist.length));
-      const fresh = new Chess();
-      for (let i = 0; i < target; i++) fresh.move(hist[i]);
-      return fresh.fen();
+      const moves = storedMoves(gameRef.current);
+      const target = Math.max(0, Math.min(viewPly, moves.length));
+      return rebuildGame(baseFenRef.current, moves, target).fen();
     } catch {
       return fen;
     }
@@ -280,11 +366,9 @@ export default function Home() {
   const displayGame = useMemo(() => {
     if (viewPly === null) return gameRef.current;
     try {
-      const c = new Chess();
-      const hist = gameRef.current.history({ verbose: true });
-      const target = Math.max(0, Math.min(viewPly, hist.length));
-      for (let i = 0; i < target; i++) c.move(hist[i]);
-      return c;
+      const moves = storedMoves(gameRef.current);
+      const target = Math.max(0, Math.min(viewPly, moves.length));
+      return rebuildGame(baseFenRef.current, moves, target);
     } catch {
       return gameRef.current;
     }
@@ -320,15 +404,13 @@ export default function Home() {
       // if browsing history, truncate to that ply first
       if (viewPly !== null) {
         try {
-          const hist = gameRef.current.history({ verbose: true });
-          const target = Math.max(0, Math.min(viewPly, hist.length));
-          const fresh = new Chess();
-          for (let i = 0; i < target; i++) fresh.move(hist[i]);
-          gameRef.current = fresh;
+          const moves = storedMoves(gameRef.current);
+          const target = Math.max(0, Math.min(viewPly, moves.length));
+          gameRef.current = rebuildGame(baseFenRef.current, moves, target);
         } catch {}
         setViewPly(null);
       }
-      if (thinking || gameRef.current.turn() !== playerColor || gameRef.current.isGameOver()) return false;
+      if (searchMode === "move" || gameRef.current.turn() !== playerColor || gameRef.current.isGameOver()) return false;
       try {
         const move = gameRef.current.move({ from, to, promotion });
         setLastMove({ from: move.from, to: move.to });
@@ -342,7 +424,7 @@ export default function Home() {
         return false;
       }
     },
-    [playerColor, startSearch, syncGame, thinking, viewPly, showToast],
+    [playerColor, searchMode, startSearch, syncGame, viewPly, showToast],
   );
 
   const playMove = useCallback(
@@ -389,48 +471,39 @@ export default function Home() {
       if (e.key === "Escape") setPendingPromotion(null);
       return;
     }
-    if (!selected) {
-      // select with arrow keys from last move or center
-      if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "ArrowUp" || e.key === "ArrowDown") {
-        e.preventDefault();
-        constsq: Square = (gameRef.current.history().length ? (lastMove?.to ?? "e2") : "e2") as Square;
-        setSelected(sq);
-      }
-      return;
-    }
-    const fileIdx = FILES.indexOf(selected[0] as typeof FILES[number]);
-    const rankIdx = RANKS.indexOf(selected[1] as typeof RANKS[number]);
-    let nf = fileIdx, nr = rankIdx;
-    if (e.key === "ArrowLeft") nf = Math.max(0, fileIdx - 1);
-    if (e.key === "ArrowRight") nf = Math.min(7, fileIdx + 1);
-    if (e.key === "ArrowUp") nr = Math.max(0, rankIdx - 1);
-    if (e.key === "ArrowDown") nr = Math.min(7, rankIdx + 1);
-    if (nf !== fileIdx || nr !== rankIdx) {
+    const activeIndex = boardSquares.indexOf(activeSquare);
+    const row = Math.floor(activeIndex / 8);
+    const column = activeIndex % 8;
+    let nextRow = row;
+    let nextColumn = column;
+    if (e.key === "ArrowLeft") nextColumn = Math.max(0, column - 1);
+    if (e.key === "ArrowRight") nextColumn = Math.min(7, column + 1);
+    if (e.key === "ArrowUp") nextRow = Math.max(0, row - 1);
+    if (e.key === "ArrowDown") nextRow = Math.min(7, row + 1);
+    if (nextRow !== row || nextColumn !== column) {
       e.preventDefault();
-      const ns = `${FILES[nf]}${RANKS[nr]}` as Square;
-      // if target is legal, move
-      if (legalTargets.has(ns)) playMove(selected, ns);
-      else setSelected(ns);
+      setActiveSquare(boardSquares[nextRow * 8 + nextColumn]);
       return;
     }
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      // cycle: if already selected, try to keep; otherwise handled by handleSquare
+      handleSquare(activeSquare);
+      return;
     }
     if (e.key === "Escape") setSelected(null);
   };
 
   const resetGame = () => {
-    workerRef.current?.postMessage("stop");
-    requestRef.current = null;
-    gameRef.current.reset();
+    stopSearch();
+    baseFenRef.current = INITIAL_FEN;
+    gameRef.current = new Chess(INITIAL_FEN);
     setLastMove(null);
+    setActiveSquare(playerColor === "w" ? "e2" : "e7");
     setEvaluation(0);
     setMate(null);
     setBestMove("—");
     setPv([]);
     setDepth(null);
-    setThinking(false);
     setPendingPromotion(null);
     syncGame();
     if (playerColor === "b") {
@@ -441,12 +514,10 @@ export default function Home() {
   };
 
   const undoTurn = () => {
-    workerRef.current?.postMessage("stop");
-    requestRef.current = null;
+    stopSearch();
     if (gameRef.current.history().length) gameRef.current.undo();
     if (gameRef.current.turn() !== playerColor && gameRef.current.history().length) gameRef.current.undo();
     setLastMove(null);
-    setThinking(false);
     setPendingPromotion(null);
     syncGame();
     if (gameRef.current.turn() !== playerColor) {
@@ -458,34 +529,34 @@ export default function Home() {
 
   const toggleAnalysis = () => {
     const next = !analysisOn;
+    analysisOnRef.current = next;
     setAnalysisOn(next);
-    workerRef.current?.postMessage("stop");
-    requestRef.current = null;
-    setThinking(false);
-    if (next) window.setTimeout(() => startSearch("analysis", gameRef.current.fen()), 50);
+    if (!next && searchMode === "analysis") stopSearch();
+    if (next && searchMode === null && gameRef.current.turn() === playerColor && !gameRef.current.isGameOver()) {
+      window.setTimeout(() => startSearch("analysis", gameRef.current.fen()), 50);
+    }
   };
 
   const chooseColor = (color: Color) => {
     if (color === playerColor) return;
-    workerRef.current?.postMessage("stop");
-    requestRef.current = null;
-    queuedEngineMoveRef.current = false;
-    gameRef.current.reset();
+    stopSearch();
+    baseFenRef.current = INITIAL_FEN;
+    gameRef.current = new Chess(INITIAL_FEN);
+    playerColorRef.current = color;
     setPlayerColor(color);
     setFlipped(color === "b");
+    setActiveSquare(color === "w" ? "e2" : "e7");
     setLastMove(null);
     setEvaluation(0);
     setMate(null);
     setBestMove("—");
     setPv([]);
     setDepth(null);
-    setThinking(false);
     setPendingPromotion(null);
     syncGame();
-    if (color === "b") {
-      window.setTimeout(() => startSearchRef.current("move", gameRef.current.fen()), 50);
-    } else if (analysisOnRef.current) {
-      window.setTimeout(() => startSearchRef.current("analysis", gameRef.current.fen()), 50);
+    const mode: EngineMode = color === "b" ? "move" : "analysis";
+    if (mode === "move" || analysisOnRef.current) {
+      window.setTimeout(() => startSearchRef.current(mode, gameRef.current.fen()), 50);
     }
   };
 
@@ -504,8 +575,8 @@ export default function Home() {
     const fenStr = fenInput.trim();
     try {
       const c = new Chess(fenStr);
-      workerRef.current?.postMessage("stop");
-      requestRef.current = null;
+      stopSearch();
+      baseFenRef.current = c.fen();
       gameRef.current = c;
       setLastMove(null);
       setEvaluation(0);
@@ -513,10 +584,14 @@ export default function Home() {
       setBestMove("—");
       setPv([]);
       setDepth(null);
-      setThinking(false);
       setPendingPromotion(null);
       syncGame();
-      if (analysisOn) window.setTimeout(() => startSearch("analysis", c.fen()), 50);
+      if (!c.isGameOver()) {
+        const mode: EngineMode = c.turn() === playerColor ? "analysis" : "move";
+        if (mode === "move" || analysisOn) {
+          window.setTimeout(() => startSearch(mode, c.fen()), 50);
+        }
+      }
       showToast("Position loaded");
     } catch {
       showToast("Invalid FEN");
@@ -564,7 +639,7 @@ export default function Home() {
           <div className="player-strip opponent">
             <div className={`avatar ${playerColor === "w" ? "dark" : "light-avatar"}`}>{playerColor === "w" ? "♞" : "♘"}</div>
             <div><strong>Stockfish</strong><span>{playerColor === "w" ? "Black" : "White"} · {LEVELS[level].name} strength · {LEVELS[level].elo} Elo</span></div>
-            {thinking && <div className="thinking-bars" aria-label="Stockfish is thinking"><i /><i /><i /></div>}
+            {searchMode === "move" && <div className="thinking-bars" aria-label="Stockfish is thinking"><i /><i /><i /></div>}
           </div>
 
           <div className="board-wrap">
@@ -580,7 +655,7 @@ export default function Home() {
               ref={boardRef}
               tabIndex={0}
               onKeyDown={handleKeyDown}
-              aria-activedescendant={selected ? `sq-${selected}` : undefined}
+              aria-activedescendant={`sq-${activeSquare}`}
             >
               {boardSquares.map((square, index) => {
                 const piece = displayGame.get(square);
@@ -591,15 +666,21 @@ export default function Home() {
                 const isTarget = legalTargets.has(square);
                 const isLast = lastMove?.from === square || lastMove?.to === square;
                 const isCheck = kingInCheckSquare === square;
+                const isKeyboardActive = activeSquare === square;
                 const displayFile = index >= 56;
                 const displayRank = index % 8 === 0;
                 return (
                   <button
                     id={`sq-${square}`}
-                    className={`square ${light ? "light" : "dark"} ${isSelected ? "selected" : ""} ${isLast ? "last" : ""} ${isCheck ? "check" : ""}`}
+                    className={`square ${light ? "light" : "dark"} ${isSelected ? "selected" : ""} ${isLast ? "last" : ""} ${isCheck ? "check" : ""} ${isKeyboardActive ? "keyboard-active" : ""}`}
                     key={square}
-                    onClick={() => handleSquare(square)}
+                    tabIndex={-1}
+                    onClick={() => {
+                      setActiveSquare(square);
+                      handleSquare(square);
+                    }}
                     onPointerDown={() => {
+                      setActiveSquare(square);
                       if (!piece || piece.color !== playerColor) return;
                       setDragFrom(square);
                       setSelected(square);
@@ -637,10 +718,11 @@ export default function Home() {
                     {piece && (
                       <span
                         className={`piece ${piece.color === "w" ? "white-piece" : "black-piece"}`}
-                        draggable={piece.color === playerColor && displayGame.turn() === playerColor && viewPly === null && !thinking}
+                        draggable={piece.color === playerColor && displayGame.turn() === playerColor && viewPly === null && searchMode !== "move"}
                         onDragStart={(event) => {
                           event.dataTransfer.setData("text/plain", square);
                           event.dataTransfer.effectAllowed = "move";
+                          setActiveSquare(square);
                           setSelected(square);
                         }}
                       >
@@ -725,7 +807,7 @@ export default function Home() {
             </div>
             <div className="line-box">
               <span>Principal variation {pv.length ? `· ${pv.length} moves` : ""}</span>
-              <code>{pv.length ? pv.map(prettyMove).join("  ·  ") : analysisOn ? thinking ? "Calculating…" : "Play a move to analyze" : "Analysis paused"}</code>
+              <code>{pv.length ? pv.map(prettyMove).join("  ·  ") : analysisOn ? searchMode === "analysis" ? "Calculating…" : "Play a move to analyze" : "Analysis paused"}</code>
             </div>
           </div>
 
@@ -736,7 +818,7 @@ export default function Home() {
               <button onClick={() => setViewPly((v) => Math.max(0, (v ?? history.length) - 1))} disabled={history.length === 0 || (viewPly ?? history.length) === 0} title="Previous">◀</button>
               <button onClick={() => setViewPly(null)} disabled={viewPly === null} title="Latest">●</button>
               <button onClick={() => setViewPly((v) => Math.min(history.length, (v ?? history.length) + 1))} disabled={history.length === 0 || (viewPly ?? history.length) >= history.length} title="Next">▶</button>
-              <button onClick={() => setViewPly(history.length)} disabled={viewPly === history.length} title="End">⏭</button>
+              <button onClick={() => setViewPly(history.length)} disabled={history.length === 0 || viewPly === history.length} title="End">⏭</button>
             </div>
             <div className="move-list" role="list">
               {history.length === 0 ? <p>{playerColor === "w" ? "No moves yet. You’re white." : "Stockfish is preparing the first move."}</p> : Array.from({ length: Math.ceil(history.length / 2) }, (_, index) => {
