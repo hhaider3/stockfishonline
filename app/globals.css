@@ -279,6 +279,11 @@ button { color: inherit; }
   outline-offset: 3px;
   border-radius: 10px;
 }
+.chessboard:focus-visible .square.keyboard-active {
+  outline: 3px solid var(--acid);
+  outline-offset: -3px;
+  z-index: 2;
+}
 
 .piece {
   position: relative;
@@ -312,6 +317,7 @@ button { color: inherit; }
 .square.dark .rank-label, .square.dark .file-label { color: rgba(235, 240, 222, .72); }
 
 .control-panel {
+  min-width: 0;
   margin-top: 55px;
   padding: 25px;
   border: 1px solid rgba(45, 64, 49, .14);
@@ -380,7 +386,7 @@ input[type="range"] {
 }
 .range-labels { color: #92998f; font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
 
-.analysis-card { margin-top: 18px; padding: 17px; border-radius: 11px; background: #eef2df; }
+.analysis-card { min-width: 0; margin-top: 18px; padding: 17px; border-radius: 11px; background: #eef2df; }
 .analysis-title { display: flex; align-items: center; justify-content: space-between; font-size: 11px; font-weight: 800; }
 .analysis-title > div { display: flex; align-items: center; gap: 9px; }
 .toggle { width: 34px; height: 18px; padding: 2px; border: 0; border-radius: 99px; background: #aeb5a8; cursor: pointer; }
@@ -392,8 +398,8 @@ input[type="range"] {
 .score-row > div { padding: 11px; border-radius: 8px; background: rgba(255,255,255,.65); }
 .score-row span, .line-box span { display: block; color: var(--muted); font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
 .score-row strong { display: block; margin-top: 5px; font-family: Georgia, serif; font-size: 16px; font-weight: 500; }
-.line-box { margin-top: 9px; padding: 11px; border-radius: 8px; background: rgba(255,255,255,.65); overflow: hidden; }
-.line-box code { display: block; margin-top: 7px; overflow: hidden; color: #3f5144; font-size: 10px; white-space: nowrap; text-overflow: ellipsis; }
+.line-box { min-width: 0; margin-top: 9px; padding: 11px; border-radius: 8px; background: rgba(255,255,255,.65); overflow: hidden; }
+.line-box code { display: block; max-width: 100%; margin-top: 7px; overflow: hidden; color: #3f5144; font-size: 10px; white-space: nowrap; text-overflow: ellipsis; }
 
 .moves-card { margin-top: 19px; }
 .moves-title { padding-bottom: 9px; border-bottom: 1px solid var(--line); color: #505b51; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .09em; }
@@ -523,7 +529,7 @@ footer a { color: #526956; text-decoration: none; }
 footer a:hover { text-decoration: underline; }
 
 @media (max-width: 980px) {
-  .game-layout { grid-template-columns: 1fr; gap: 22px; }
+  .game-layout { grid-template-columns: minmax(0, 1fr); gap: 22px; }
   .board-column { margin: 0 auto; }
   .control-panel { max-width: 720px; width: 100%; margin: 0 auto; }
 }
