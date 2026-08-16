@@ -30,7 +30,7 @@ test("server-renders Stockfish Board", async () => {
   const html = await response.text();
   assert.match(html, /<title>Stockfish Board.*<\/title>/i);
   assert.match(html, /Stockfish Board/);
-  assert.match(html, /Your board/);
+  assert.match(html, /Play Stockfish 18/);
   assert.match(html, /Chess board/);
   assert.match(html, /Engine analysis/);
   assert.match(html, /Stockfish 18/);

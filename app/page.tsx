@@ -24,14 +24,20 @@ type DragState = {
   x: number;
   y: number;
   size: number;
-  fontSize: number;
 };
 
 const FILES = ["a", "b", "c", "d", "e", "f", "g", "h"] as const;
 const RANKS = ["8", "7", "6", "5", "4", "3", "2", "1"] as const;
-const PIECES: Record<Color, Record<PieceSymbol, string>> = {
-  w: { p: "♙", n: "♘", b: "♗", r: "♖", q: "♕", k: "♔" },
-  b: { p: "♟", n: "♞", b: "♝", r: "♜", q: "♛", k: "♚" },
+// cburnett SVG set by Colin M.L. Burnett, CC BY-SA 3.0 (see public/pieces/README.md)
+const pieceSrc = (color: Color, type: PieceSymbol) =>
+  `/pieces/cburnett/${color}${type.toUpperCase()}.svg`;
+const PIECE_NAMES: Record<PieceSymbol, string> = {
+  p: "pawn",
+  n: "knight",
+  b: "bishop",
+  r: "rook",
+  q: "queen",
+  k: "king",
 };
 
 type Level = {
@@ -116,7 +122,7 @@ export default function Home() {
   const [viewPly, setViewPly] = useState<number | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [dragOver, setDragOver] = useState<Square | null>(null);
-  const dragGhostRef = useRef<HTMLSpanElement | null>(null);
+  const dragGhostRef = useRef<HTMLImageElement | null>(null);
   const [copyLabel, setCopyLabel] = useState<string | null>(null);
 
   const showToast = useCallback((msg: string) => {
@@ -684,7 +690,9 @@ export default function Home() {
     <main className="app-shell">
       <header className="topbar">
         <a className="brand" href="#board" aria-label="Stockfish Board home">
-          <span className="brand-mark">♞</span>
+          <span className="brand-mark">
+            <img src={pieceSrc("w", "n")} alt="" draggable={false} />
+          </span>
           <span>Stockfish <b>Board</b></span>
         </a>
         <div className="engine-pill" data-ready={engineState === "Ready"} title={engineState}>
@@ -697,15 +705,16 @@ export default function Home() {
       </header>
 
       <section className="hero-copy">
-        <p className="eyebrow">PLAY · LEARN · ANALYZE</p>
-        <h1>Your board. <span>The engine&apos;s truth.</span></h1>
-        <p>Play a full game against Stockfish, with private on-device analysis and no account required.</p>
+        <h1>Play Stockfish 18 <span>in your browser.</span></h1>
+        <p>Full games against the engine, with live analysis that never leaves your device. No account, no server.</p>
       </section>
 
       <section className="game-layout" id="board">
         <div className="board-column">
           <div className="player-strip opponent">
-            <div className={`avatar ${playerColor === "w" ? "dark" : "light-avatar"}`}>{playerColor === "w" ? "♞" : "♘"}</div>
+            <div className={`avatar ${playerColor === "w" ? "dark" : "light-avatar"}`}>
+              <img src={pieceSrc(playerColor === "w" ? "w" : "b", "n")} alt="" draggable={false} />
+            </div>
             <div><strong>Stockfish</strong><span>{playerColor === "w" ? "Black" : "White"} · {LEVELS[level].name} strength · {LEVELS[level].elo} Elo</span></div>
             {searchMode === "move" && <div className="thinking-bars" aria-label="Stockfish is thinking"><i /><i /><i /></div>}
           </div>
@@ -754,9 +763,7 @@ export default function Home() {
                       setSelected(square);
                       if (displayGame.turn() !== playerColor || viewPly !== null || searchMode === "move") return;
                       const board = boardRef.current?.getBoundingClientRect();
-                      const pieceEl = event.currentTarget.querySelector(".piece");
-                      if (!board || !pieceEl) return;
-                      const parsed = Number.parseFloat(getComputedStyle(pieceEl).fontSize);
+                      if (!board) return;
                       setDrag({
                         from: square,
                         color: piece.color,
@@ -764,7 +771,6 @@ export default function Home() {
                         x: event.clientX,
                         y: event.clientY,
                         size: board.width / 8,
-                        fontSize: Number.isFinite(parsed) ? parsed : board.width / 10,
                       });
                     }}
                     aria-label={`${square}${piece ? ` ${piece.color === "w" ? "white" : "black"} ${piece.type}` : " empty"}${isSelected ? " selected" : ""}${isCheck ? " check" : ""}`}
@@ -775,11 +781,12 @@ export default function Home() {
                     {displayFile && <span className="file-label">{square[0]}</span>}
                     {isTarget && <span className={piece ? "capture-ring" : "move-dot"} />}
                     {piece && (
-                      <span
-                        className={`piece ${piece.color === "w" ? "white-piece" : "black-piece"} ${drag?.from === square ? "drag-origin" : ""}`}
-                      >
-                        {PIECES[piece.color][piece.type]}
-                      </span>
+                      <img
+                        src={pieceSrc(piece.color, piece.type)}
+                        alt=""
+                        draggable={false}
+                        className={`piece ${drag?.from === square ? "drag-origin" : ""}`}
+                      />
                     )}
                   </button>
                 );
@@ -790,8 +797,8 @@ export default function Home() {
                     <p>Promote to</p>
                     <div className="promotion-choices">
                       {PROMOTION_PIECES.map((p) => (
-                        <button key={p} onClick={() => handlePromotionPick(p)} aria-label={`Promote to ${p}`}>
-                          {PIECES[playerColor][p]}
+                        <button key={p} onClick={() => handlePromotionPick(p)} aria-label={`Promote to ${PIECE_NAMES[p]}`}>
+                          <img src={pieceSrc(playerColor, p)} alt="" draggable={false} />
                         </button>
                       ))}
                     </div>
@@ -801,34 +808,40 @@ export default function Home() {
               )}
               {drag &&
                 createPortal(
-                  <span
+                  <img
                     ref={dragGhostRef}
-                    className={`piece drag-ghost ${drag.color === "w" ? "white-piece" : "black-piece"}`}
-                    aria-hidden
+                    src={pieceSrc(drag.color, drag.type)}
+                    alt=""
+                    draggable={false}
+                    className="piece drag-ghost"
                     style={{
                       width: drag.size,
                       height: drag.size,
-                      fontSize: drag.fontSize,
                       transform: `translate3d(${drag.x - drag.size / 2}px, ${drag.y - drag.size / 2}px, 0)`,
                     }}
-                  >
-                    {PIECES[drag.color][drag.type]}
-                  </span>,
+                  />,
                   document.body,
                 )}
             </div>
           </div>
 
           <div className="player-strip you">
-            <div className={`avatar ${playerColor === "w" ? "light-avatar" : "dark"}`}>{playerColor === "w" ? "♙" : "♟"}</div>
+            <div className={`avatar ${playerColor === "w" ? "light-avatar" : "dark"}`}>
+              <img src={pieceSrc(playerColor === "w" ? "b" : "w", "p")} alt="" draggable={false} />
+            </div>
             <div><strong>You</strong><span>{playerColor === "w" ? "White" : "Black"} pieces{viewPly !== null ? " · browsing" : ""}</span></div>
             <div className="turn-status" aria-live="polite">{status}</div>
           </div>
 
           <div className="board-actions">
-            <button onClick={() => setShowFenBox((v) => !v)} className="link-button">{showFenBox ? "Hide FEN" : "FEN / PGN"}</button>
-            <button onClick={() => copyText(displayFen, "FEN")} className="link-button">Copy FEN{copyLabel === "FEN" ? " ✓" : ""}</button>
-            <button onClick={() => copyText(gameRef.current.pgn(), "PGN")} className="link-button">Copy PGN{copyLabel === "PGN" ? " ✓" : ""}</button>
+            <button className="primary-button" onClick={resetGame}>New game</button>
+            <button className="secondary-button" onClick={undoTurn} disabled={!history.length}>Undo</button>
+            <button className="secondary-button" onClick={() => setFlipped((value) => !value)} aria-pressed={flipped}>Flip</button>
+            <span className="board-actions-links">
+              <button onClick={() => setShowFenBox((v) => !v)} className="link-button">{showFenBox ? "Hide FEN" : "FEN / PGN"}</button>
+              <button onClick={() => copyText(displayFen, "FEN")} className="link-button">Copy FEN{copyLabel === "FEN" ? " ✓" : ""}</button>
+              <button onClick={() => copyText(gameRef.current.pgn(), "PGN")} className="link-button">Copy PGN{copyLabel === "PGN" ? " ✓" : ""}</button>
+            </span>
           </div>
           {showFenBox && (
             <div className="fen-box">
@@ -848,7 +861,6 @@ export default function Home() {
               <p className="panel-kicker">LIVE GAME</p>
               <h2>{status}</h2>
             </div>
-            <button className="icon-button" onClick={() => setFlipped((value) => !value)} aria-label="Flip board" title="Flip board">⇅</button>
           </div>
 
           <div className="strength-block">
@@ -908,10 +920,6 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="actions">
-            <button className="primary-button" onClick={resetGame}>New game</button>
-            <button className="secondary-button" onClick={undoTurn} disabled={!history.length}>Undo turn</button>
-          </div>
           <p className="privacy-note"><span>◈</span> Engine calculations stay on this device. {viewPly !== null && <><button className="link-button inline" onClick={() => setViewPly(null)}>Return to latest</button></>}</p>
         </aside>
       </section>
@@ -922,6 +930,7 @@ export default function Home() {
         <span>Powered by Stockfish 18 WebAssembly</span>
         <a href="https://github.com/official-stockfish/Stockfish" target="_blank" rel="noreferrer">Open-source engine</a>
         <a href="/engine/Copying.txt">GPLv3 license</a>
+        <a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank" rel="noreferrer" title="Chess piece artwork by Colin M.L. Burnett">Piece art CC BY-SA</a>
       </footer>
     </main>
   );
