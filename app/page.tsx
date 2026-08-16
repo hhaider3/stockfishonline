@@ -16,6 +16,15 @@ type StoredGame = {
   flipped?: boolean;
 };
 type PendingPromotion = { from: Square; to: Square } | null;
+type DragState = {
+  from: Square;
+  color: Color;
+  type: PieceSymbol;
+  x: number;
+  y: number;
+  size: number;
+  fontSize: number;
+};
 
 const FILES = ["a", "b", "c", "d", "e", "f", "g", "h"] as const;
 const RANKS = ["8", "7", "6", "5", "4", "3", "2", "1"] as const;
@@ -104,7 +113,9 @@ export default function Home() {
   const [fenInput, setFenInput] = useState(INITIAL_FEN);
   const [showFenBox, setShowFenBox] = useState(false);
   const [viewPly, setViewPly] = useState<number | null>(null);
-  const [dragFrom, setDragFrom] = useState<Square | null>(null);
+  const [drag, setDrag] = useState<DragState | null>(null);
+  const [dragOver, setDragOver] = useState<Square | null>(null);
+  const dragGhostRef = useRef<HTMLSpanElement | null>(null);
   const [copyLabel, setCopyLabel] = useState<string | null>(null);
 
   const showToast = useCallback((msg: string) => {
@@ -117,7 +128,8 @@ export default function Home() {
     setFen(f);
     setFenInput(f);
     setSelected(null);
-    setDragFrom(null);
+    setDrag(null);
+    setDragOver(null);
     // when not browsing, keep view at latest
     setViewPly(null);
   }, []);
@@ -427,6 +439,61 @@ export default function Home() {
     [playerColor, searchMode, startSearch, syncGame, viewPly, showToast],
   );
 
+  // Touch pointers are implicitly captured by the square where the drag began,
+  // so pointer events can't be trusted to target the square under the finger.
+  // Hit-test by coordinates against the board rect instead.
+  const squareFromPoint = useCallback(
+    (clientX: number, clientY: number): Square | null => {
+      const board = boardRef.current;
+      if (!board) return null;
+      const rect = board.getBoundingClientRect();
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
+      if (x < 0 || y < 0 || x >= rect.width || y >= rect.height) return null;
+      const column = Math.min(7, Math.floor((x / rect.width) * 8));
+      const row = Math.min(7, Math.floor((y / rect.height) * 8));
+      return boardSquares[row * 8 + column] ?? null;
+    },
+    [boardSquares],
+  );
+
+  useEffect(() => {
+    if (!drag) return;
+    const endDrag = () => {
+      setDrag(null);
+      setDragOver(null);
+    };
+    const onMove = (event: PointerEvent) => {
+      const ghost = dragGhostRef.current;
+      if (ghost) {
+        ghost.style.transform = `translate3d(${event.clientX - drag.size / 2}px, ${
+          event.clientY - drag.size / 2
+        }px, 0)`;
+      }
+      const square = squareFromPoint(event.clientX, event.clientY);
+      setDragOver((prev) => (prev === square ? prev : square));
+    };
+    const onUp = (event: PointerEvent) => {
+      const target = squareFromPoint(event.clientX, event.clientY);
+      if (target && target !== drag.from) {
+        const legal = displayGame.moves({ square: drag.from, verbose: true }).some((m) => m.to === target);
+        if (legal) {
+          if (isPromotionMove(displayGame, drag.from, target)) setPendingPromotion({ from: drag.from, to: target });
+          else commitMove(drag.from, target);
+        }
+      }
+      endDrag();
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", endDrag);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", endDrag);
+    };
+  }, [drag, commitMove, displayGame, squareFromPoint]);
+
   const playMove = useCallback(
     (from: Square, to: Square) => {
       if (isPromotionMove(gameRef.current, from, to)) {
@@ -667,46 +734,37 @@ export default function Home() {
                 const isLast = lastMove?.from === square || lastMove?.to === square;
                 const isCheck = kingInCheckSquare === square;
                 const isKeyboardActive = activeSquare === square;
+                const isDragOver = drag !== null && dragOver === square;
                 const displayFile = index >= 56;
                 const displayRank = index % 8 === 0;
                 return (
                   <button
                     id={`sq-${square}`}
-                    className={`square ${light ? "light" : "dark"} ${isSelected ? "selected" : ""} ${isLast ? "last" : ""} ${isCheck ? "check" : ""} ${isKeyboardActive ? "keyboard-active" : ""}`}
+                    className={`square ${light ? "light" : "dark"} ${isSelected ? "selected" : ""} ${isLast ? "last" : ""} ${isCheck ? "check" : ""} ${isDragOver ? "drag-over" : ""} ${isKeyboardActive ? "keyboard-active" : ""}`}
                     key={square}
                     tabIndex={-1}
                     onClick={() => {
                       setActiveSquare(square);
                       handleSquare(square);
                     }}
-                    onPointerDown={() => {
+                    onPointerDown={(event) => {
                       setActiveSquare(square);
                       if (!piece || piece.color !== playerColor) return;
-                      setDragFrom(square);
                       setSelected(square);
-                    }}
-                    onPointerUp={() => {
-                      if (dragFrom && dragFrom !== square) {
-                        // pointer drag finish
-                        if (legalTargets.has(square) || displayGame.moves({ square: dragFrom, verbose: true }).some((m) => m.to === square)) {
-                          // re-evaluate promotion from dragFrom
-                          if (isPromotionMove(displayGame, dragFrom, square)) {
-                            setPendingPromotion({ from: dragFrom, to: square });
-                          } else {
-                            commitMove(dragFrom, square);
-                          }
-                        }
-                      }
-                      setDragFrom(null);
-                    }}
-                    onDragOver={(event) => event.preventDefault()}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      const from = event.dataTransfer.getData("text/plain") as Square;
-                      if (from) {
-                        if (isPromotionMove(displayGame, from, square)) setPendingPromotion({ from, to: square });
-                        else commitMove(from, square);
-                      }
+                      if (displayGame.turn() !== playerColor || viewPly !== null || searchMode === "move") return;
+                      const board = boardRef.current?.getBoundingClientRect();
+                      const pieceEl = event.currentTarget.querySelector(".piece");
+                      if (!board || !pieceEl) return;
+                      const parsed = Number.parseFloat(getComputedStyle(pieceEl).fontSize);
+                      setDrag({
+                        from: square,
+                        color: piece.color,
+                        type: piece.type,
+                        x: event.clientX,
+                        y: event.clientY,
+                        size: board.width / 8,
+                        fontSize: Number.isFinite(parsed) ? parsed : board.width / 10,
+                      });
                     }}
                     aria-label={`${square}${piece ? ` ${piece.color === "w" ? "white" : "black"} ${piece.type}` : " empty"}${isSelected ? " selected" : ""}${isCheck ? " check" : ""}`}
                     aria-selected={isSelected}
@@ -717,14 +775,7 @@ export default function Home() {
                     {isTarget && <span className={piece ? "capture-ring" : "move-dot"} />}
                     {piece && (
                       <span
-                        className={`piece ${piece.color === "w" ? "white-piece" : "black-piece"}`}
-                        draggable={piece.color === playerColor && displayGame.turn() === playerColor && viewPly === null && searchMode !== "move"}
-                        onDragStart={(event) => {
-                          event.dataTransfer.setData("text/plain", square);
-                          event.dataTransfer.effectAllowed = "move";
-                          setActiveSquare(square);
-                          setSelected(square);
-                        }}
+                        className={`piece ${piece.color === "w" ? "white-piece" : "black-piece"} ${drag?.from === square ? "drag-origin" : ""}`}
                       >
                         {PIECES[piece.color][piece.type]}
                       </span>
@@ -746,6 +797,21 @@ export default function Home() {
                     <button className="promotion-cancel" onClick={() => setPendingPromotion(null)}>Cancel</button>
                   </div>
                 </div>
+              )}
+              {drag && (
+                <span
+                  ref={dragGhostRef}
+                  className={`piece drag-ghost ${drag.color === "w" ? "white-piece" : "black-piece"}`}
+                  aria-hidden
+                  style={{
+                    width: drag.size,
+                    height: drag.size,
+                    fontSize: drag.fontSize,
+                    transform: `translate3d(${drag.x - drag.size / 2}px, ${drag.y - drag.size / 2}px, 0)`,
+                  }}
+                >
+                  {PIECES[drag.color][drag.type]}
+                </span>
               )}
             </div>
           </div>
