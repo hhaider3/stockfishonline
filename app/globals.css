@@ -272,7 +272,7 @@ button { color: inherit; }
   box-shadow: inset 0 0 0 4px rgba(215, 245, 91, .85);
 }
 .piece.drag-origin { opacity: .35; }
-.drag-ghost {
+.piece.drag-ghost {
   position: fixed;
   left: 0;
   top: 0;

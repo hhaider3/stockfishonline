@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Chess, type Color, type PieceSymbol, type Square } from "chess.js";
 
 type EngineMode = "move" | "analysis";
@@ -798,21 +799,23 @@ export default function Home() {
                   </div>
                 </div>
               )}
-              {drag && (
-                <span
-                  ref={dragGhostRef}
-                  className={`piece drag-ghost ${drag.color === "w" ? "white-piece" : "black-piece"}`}
-                  aria-hidden
-                  style={{
-                    width: drag.size,
-                    height: drag.size,
-                    fontSize: drag.fontSize,
-                    transform: `translate3d(${drag.x - drag.size / 2}px, ${drag.y - drag.size / 2}px, 0)`,
-                  }}
-                >
-                  {PIECES[drag.color][drag.type]}
-                </span>
-              )}
+              {drag &&
+                createPortal(
+                  <span
+                    ref={dragGhostRef}
+                    className={`piece drag-ghost ${drag.color === "w" ? "white-piece" : "black-piece"}`}
+                    aria-hidden
+                    style={{
+                      width: drag.size,
+                      height: drag.size,
+                      fontSize: drag.fontSize,
+                      transform: `translate3d(${drag.x - drag.size / 2}px, ${drag.y - drag.size / 2}px, 0)`,
+                    }}
+                  >
+                    {PIECES[drag.color][drag.type]}
+                  </span>,
+                  document.body,
+                )}
             </div>
           </div>
 
